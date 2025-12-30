@@ -1,0 +1,30 @@
+# Dependencies
+node_modules/
+
+# Environment variables
+.env
+
+# Build output
+dist/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# YouTube cookies (sensitive)
+*.cookies.txt
+www.youtube.com_cookies.txt
+
+# yt-dlp binary (can be downloaded)
+yt-dlp.exe
+
+# tokens file (sensitive)
+tokens.txt
