@@ -143,6 +143,37 @@ const commands = [
             option.setName('prompt')
                 .setDescription('Mô tả thay đổi (VD: "thêm mũ cho con mèo")')
                 .setRequired(true)),
+
+    // ========== GAME COMMANDS ==========
+    new SlashCommandBuilder()
+        .setName('masoi')
+        .setDescription('Ma Sói (Werewolf) game commands')
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('start')
+                .setDescription('Tạo phòng chơi Ma Sói')
+                .addStringOption(option =>
+                    option
+                        .setName('preset')
+                        .setDescription('Preset vai diễn')
+                        .setRequired(false)
+                        .addChoices(
+                            { name: 'Mini (6-8 người)', value: 'mini' },
+                            { name: 'Basic (8-10 người)', value: 'basic' },
+                            { name: 'Advanced (10-15 người)', value: 'advanced' }
+                        )
+                )
+        )
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('end')
+                .setDescription('Kết thúc game hiện tại (chỉ host)')
+        )
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('status')
+                .setDescription('Xem trạng thái game hiện tại')
+        ),
 ].map(command => command.toJSON());
 
 const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN);

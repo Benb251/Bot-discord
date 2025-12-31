@@ -14,6 +14,7 @@ import play from 'play-dl'; // For search and playlist info only
 import type { VoiceBasedChannel, TextChannel } from 'discord.js';
 import ffmpegPath from 'ffmpeg-static';
 import * as path from 'path';
+import { parseSpotifyUrl } from './SpotifyHandler';
 
 // Configure FFmpeg path for prism-media
 if (ffmpegPath) {
@@ -77,6 +78,30 @@ async function parseQuery(query: string): Promise<TrackInfo[]> {
     const tracks: TrackInfo[] = [];
 
     try {
+        // ===== SPOTIFY URL DETECTION =====
+        if (query.includes('spotify.com/')) {
+            console.log('[Music] Detected Spotify URL, parsing...');
+
+            // Extract clean Spotify URL from message
+            const spotifyMatch = query.match(/(https?:\/\/open\.spotify\.com\/[^\s]+)/);
+            if (spotifyMatch) {
+                const spotifyUrl = spotifyMatch[1];
+                console.log('[Music] Extracted Spotify URL:', spotifyUrl);
+
+                const spotifyResult = await parseSpotifyUrl(spotifyUrl);
+
+                if (spotifyResult.tracks.length > 0) {
+                    console.log(`[Music] Found ${spotifyResult.tracks.length} Spotify tracks`);
+                    // Convert SpotifyTrackInfo to TrackInfo
+                    return spotifyResult.tracks.map(t => ({
+                        url: t.youtubeQuery, // Use YouTube query as identifier
+                        title: t.title,
+                        duration: t.duration ? `${Math.floor(t.duration / 60)}:${(t.duration % 60).toString().padStart(2, '0')}` : '?:??'
+                    }));
+                }
+            }
+        }
+
         // Check if it's a playlist (but not Radio Mix which often fails)
         if (query.includes('list=') && !query.includes('start_radio=1')) {
             console.log('[Music] Parsing playlist...');
@@ -227,9 +252,12 @@ async function playNextInQueue(guildId: string): Promise<void> {
         state.player.play(resource);
         console.log('[Music] Now playing:', nextTrack.title);
 
-        if (state.textChannel) {
+        if (nextTrack) {
             const queueLength = state.queue.length;
-            state.textChannel.send(`🎵 **Đang phát:** ${nextTrack.title} [${nextTrack.duration}]\n📋 Còn ${queueLength} bài trong queue`);
+            state.textChannel?.send(`🎵 **Đang phát:** ${nextTrack.title} [${nextTrack.duration}]\n📋 Còn ${queueLength} bài trong queue`)
+                .then(msg => {
+                    setTimeout(() => msg.delete().catch(() => { }), 30000); // Auto-delete after 30s
+                });
         }
     } catch (error) {
         console.error('[Music] Play error:', error);

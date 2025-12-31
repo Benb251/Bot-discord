@@ -16,7 +16,7 @@ const client = new AntigravityClient();
 const INTENT_SYSTEM_PROMPT = `Bạn là một AI phân tích ý định người dùng cho bot Discord phát nhạc.
 
 Phân tích tin nhắn và trả về JSON với format:
-{"type": "play|stop|skip|queue|clear|leave|none", "query": "tên bài hát nếu có"}
+{"type": "play|stop|skip|queue|clear|leave|none", "query": "tên bài hát nếu có", "url": "URL nếu có"}
 
 Các ý định:
 - "play": Người dùng muốn phát nhạc hoặc thêm bài (ví dụ: "bật nhạc đi", "mở bài MCK", "thêm bài này vào queue")
@@ -31,6 +31,8 @@ Lưu ý:
 - Hiểu cả tiếng Việt có dấu và không dấu
 - Hiểu các cách nói tự nhiên, thân mật như "đi bé", "nha", "luôn đi"
 - Nếu có tên bài hát, trích xuất vào "query"
+- **QUAN TRỌNG: Nếu có URL (Spotify, YouTube, etc.), trích xuất CHÍNH XÁC vào "url"**
+- Ví dụ: "phát list này https://open.spotify.com/..." → {"type":"play","query":"list này","url":"https://open.spotify.com/..."}
 - CHỈ trả về JSON, không giải thích gì thêm`;
 
 /**
@@ -64,7 +66,10 @@ export async function parseMusicIntent(message: string): Promise<MusicIntent> {
 
         switch (parsed.type) {
             case 'play':
-                return { type: 'play', query: parsed.query || '' };
+                // Prioritize AI-extracted URL over full query
+                const finalQuery = parsed.url || parsed.query || '';
+                console.log('[IntentParser] Final query:', finalQuery, '(URL extracted:', !!parsed.url, ')');
+                return { type: 'play', query: finalQuery };
             case 'stop':
                 return { type: 'stop' };
             case 'skip':

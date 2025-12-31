@@ -5,6 +5,9 @@ import { AntigravityClient } from './core/AntigravityClient';
 import { initDashboard, startDashboard } from './dashboard/server';
 import { joinChannel, leaveChannel, playMusic, stopMusic, skipTrack, getQueue, clearQueue } from './core/MusicHandler';
 import { parseMusicIntent } from './core/IntentParser';
+import { WerewolfGame } from './games/werewolf/WerewolfGame';
+import { gameStateManager } from './games/werewolf/GameState';
+import { Team, ROLES } from './games/werewolf/Roles';
 
 dotenv.config();
 
@@ -1595,5 +1598,305 @@ if (!DISCORD_TOKEN) {
 // Initialize Dashboard with shared state
 initDashboard(client, conversationMemory, autoReplyChannels, scheduledSummaries, BOT_START_TIME);
 startDashboard(DASHBOARD_PORT);
+
+// ==================== MA SÓI INTERACTION HANDLERS ====================
+
+client.on('interactionCreate', async (interaction) => {
+    try {
+        // Handle slash commands
+        if (interaction.isChatInputCommand()) {
+            if (interaction.commandName === 'masoi') {
+                const subcommand = interaction.options.getSubcommand();
+
+                if (subcommand === 'start') {
+                    await interaction.deferReply();
+
+                    const preset = (interaction.options.getString('preset') || 'basic') as 'basic' | 'advanced';
+                    const channel = interaction.channel;
+
+                    if (!channel || !channel.isTextBased()) {
+                        await interaction.editReply('Lỗi: Không thể tạo game trong channel này!');
+                        return;
+                    }
+
+                    try {
+                        const gameId = await WerewolfGame.createLobby(
+                            interaction.guild!,
+                            channel as any,
+                            interaction.member as any,
+                            preset
+                        );
+
+                        await interaction.editReply(`✅ Đã tạo phòng Ma Sói! Game ID: ${gameId}`);
+                    } catch (error: any) {
+                        await interaction.editReply(`❌ ${error.message}`);
+                    }
+                }
+                else if (subcommand === 'status') {
+                    const game = gameStateManager.getGameByGuild(interaction.guildId!);
+                    if (!game) {
+                        await interaction.reply({ content: 'Không có game nào đang diễn ra!', ephemeral: true });
+                        return;
+                    }
+
+                    const players = Array.from(game.players.values());
+                    const alivePlayers = players.filter(p => p.isAlive);
+
+                    await interaction.reply({
+                        content: `**Ma Sói - Trạng Thái**\nNgày: ${game.day}\nPhase: ${game.phase}\nCòn sống: ${alivePlayers.length}/${players.length}`,
+                        ephemeral: true
+                    });
+                }
+                else if (subcommand === 'end') {
+                    const game = gameStateManager.getGameByGuild(interaction.guildId!);
+                    if (!game) {
+                        await interaction.reply({ content: 'Không có phòng Ma Sói nào!', ephemeral: true });
+                        return;
+                    }
+
+                    if (game.hostId !== interaction.user.id) {
+                        await interaction.reply({ content: 'Chỉ host mới có thể hủy phòng!', ephemeral: true });
+                        return;
+                    }
+
+                    await WerewolfGame.endGame(game.id);
+
+                    const statusMsg = game.status === 'lobby' ? 'hủy phòng' : 'kết thúc game';
+                    await interaction.reply(`✅ Đã ${statusMsg}!`);
+                }
+            }
+        }
+
+        // Handle select menu interactions (for voting)
+        else if (interaction.isStringSelectMenu()) {
+            const [action, type, gameId] = interaction.customId.split('_');
+
+            if (action === 'masoi' && type === 'dayvote') {
+                const game = gameStateManager.getGame(gameId);
+                if (!game) {
+                    await interaction.reply({ content: '❌ Game không tồn tại!', ephemeral: true });
+                    return;
+                }
+
+                const voterId = interaction.user.id;
+                const targetId = interaction.values[0];
+
+                // Check if voter is alive
+                const voter = game.players.get(voterId);
+                if (!voter || !voter.isAlive) {
+                    await interaction.reply({ content: '❌ Bạn không thể vote (đã chết hoặc không trong game)!', ephemeral: true });
+                    return;
+                }
+
+                // Handle skip vote
+                if (targetId === 'skip') {
+                    await interaction.reply({ content: '⏭️ Bạn đã bỏ qua vote.', ephemeral: true });
+                    return;
+                }
+
+                // Record vote
+                game.dayVotes.set(voterId, { voterId, targetId });
+
+                const target = game.players.get(targetId);
+                await interaction.reply({ content: `✅ Bạn đã vote ${target?.username}!`, ephemeral: true });
+
+                console.log(`[MA SÓI] ${voter.username} voted for ${target?.username}`);
+            }
+            // Night action handlers
+            else if (action === 'masoi' && type === 'nightaction') {
+                const game = gameStateManager.getGame(gameId);
+                if (!game) {
+                    await interaction.reply({ content: '❌ Game không tồn tại!', ephemeral: true });
+                    return;
+                }
+
+                const actorId = interaction.user.id;
+                const targetId = interaction.values[0];
+                const actionType = interaction.customId.split('_')[3]; // kill/check/protect
+
+                // Check if actor is alive
+                const actor = game.players.get(actorId);
+                if (!actor || !actor.isAlive) {
+                    await interaction.reply({ content: '❌ Bạn không thể hành động (đã chết hoặc không trong game)!', ephemeral: true });
+                    return;
+                }
+
+                const target = game.players.get(targetId);
+
+                // Record night action
+                if (actionType === 'kill') {
+                    game.nightActions.set(actorId, { playerId: actorId, actionType: 'kill', targetId });
+                    await interaction.reply({ content: `✅ Bạn đã vote giết ${target?.username}!`, ephemeral: true });
+                }
+                else if (actionType === 'check') {
+                    game.nightActions.set(actorId, { playerId: actorId, actionType: 'check', targetId });
+                    // Send result immediately
+                    const isWerewolf = target?.team === Team.WEREWOLF;
+                    await interaction.reply({
+                        content: `🔮 Kết quả: ${target?.username} ${isWerewolf ? '**là Ma Sói!** 🐺' : '**KHÔNG phải Ma Sói** ✅'}`,
+                        ephemeral: true
+                    });
+                }
+                else if (actionType === 'protect') {
+                    game.nightActions.set(actorId, { playerId: actorId, actionType: 'protect', targetId });
+                    await interaction.reply({ content: `🛡️ Bạn đã bảo vệ ${target?.username}!`, ephemeral: true });
+                }
+                else if (actionType === 'pair') {
+                    // Cupid pairing - needs 2 targets
+                    const target1Id = interaction.values[0];
+                    const target2Id = interaction.values[1];
+                    const target1 = game.players.get(target1Id);
+                    const target2 = game.players.get(target2Id);
+
+                    game.nightActions.set(actorId, { playerId: actorId, actionType: 'pair', targetId: target1Id, targetId2: target2Id });
+
+                    // Set pairs
+                    if (target1) target1.pairedWith = target2Id;
+                    if (target2) target2.pairedWith = target1Id;
+                    game.cupidPairs = [target1Id, target2Id];
+
+                    await interaction.reply({ content: `💘 Bạn đã ghép đôi ${target1?.username} và ${target2?.username}!`, ephemeral: true });
+                }
+                else if (actionType === 'witch') {
+                    // Witch action
+                    const value = interaction.values[0];
+
+                    if (value === 'skip') {
+                        await interaction.reply({ content: '⏭️ Bạn đã bỏ qua đêm nay.', ephemeral: true });
+                        return;
+                    }
+
+                    const [witchAction, witchTargetId] = value.split('_');
+
+                    if (witchAction === 'heal') {
+                        const witchState = game.witchStates.get(actorId);
+                        if (witchState && witchState.hasHealPotion) {
+                            witchState.hasHealPotion = false;
+                            game.nightActions.set(actorId, { playerId: actorId, actionType: 'heal', targetId: witchTargetId });
+                            const healTarget = game.players.get(witchTargetId);
+                            await interaction.reply({ content: `💊 Bạn đã cứu ${healTarget?.username}!`, ephemeral: true });
+                        }
+                    }
+                    else if (witchAction === 'poison') {
+                        const witchState = game.witchStates.get(actorId);
+                        if (witchState && witchState.hasPoisonPotion) {
+                            witchState.hasPoisonPotion = false;
+                            game.nightActions.set(actorId, { playerId: actorId, actionType: 'poison', targetId: witchTargetId });
+                            const poisonTarget = game.players.get(witchTargetId);
+                            await interaction.reply({ content: `☠️ Bạn đã đầu độc ${poisonTarget?.username}!`, ephemeral: true });
+                        }
+                    }
+                }
+
+                console.log(`[MA SÓI] ${actor.username} (${ROLES[actor.role].nameVi}) used ${actionType} on ${target?.username}`);
+            }
+        }
+
+        // Handle button interactions
+        else if (interaction.isButton()) {
+            const [action, type, gameId] = interaction.customId.split('_');
+
+            if (action === 'masoi') {
+                if (type === 'join') {
+                    const success = await WerewolfGame.handleJoin(
+                        gameId,
+                        interaction.user.id,
+                        interaction.user.username
+                    );
+
+                    if (success) {
+                        await interaction.reply({ content: '✅ Đã tham gia game!', ephemeral: true });
+                        // Update lobby embed
+                        const game = gameStateManager.getGame(gameId);
+                        if (game && interaction.channel) {
+                            await WerewolfGame.sendLobbyEmbed(interaction.channel as any, gameId);
+                        }
+                    } else {
+                        await interaction.reply({ content: '❌ Không thể tham gia (game đã đầy hoặc đã bắt đầu)', ephemeral: true });
+                    }
+                }
+                else if (type === 'leave') {
+                    const success = await WerewolfGame.handleLeave(gameId, interaction.user.id);
+
+                    if (success) {
+                        await interaction.reply({ content: '✅ Đã rời phòng!', ephemeral: true });
+                        // Update lobby embed
+                        const game = gameStateManager.getGame(gameId);
+                        if (game && interaction.channel) {
+                            await WerewolfGame.sendLobbyEmbed(interaction.channel as any, gameId);
+                        }
+                    } else {
+                        await interaction.reply({ content: '❌ Không thể rời phòng', ephemeral: true });
+                    }
+                }
+                else if (type === 'start') {
+                    const game = gameStateManager.getGame(gameId);
+                    if (!game) {
+                        await interaction.reply({ content: '❌ Game không tồn tại!', ephemeral: true });
+                        return;
+                    }
+
+                    if (game.hostId !== interaction.user.id) {
+                        await interaction.reply({ content: '❌ Chỉ host mới có thể bắt đầu game!', ephemeral: true });
+                        return;
+                    }
+
+                    await interaction.deferReply();
+
+                    try {
+                        await WerewolfGame.startGame(gameId, interaction.channel as any);
+                        await interaction.editReply('✅ Game đã bắt đầu!');
+                    } catch (error: any) {
+                        await interaction.editReply(`❌ ${error.message}`);
+                    }
+                }
+                // Handle night action button
+                else if (type === 'nightbtn') {
+                    const userId = interaction.customId.split('_')[3];
+
+                    // Check if this button belongs to this user
+                    if (userId !== interaction.user.id) {
+                        await interaction.reply({ content: '❌ Đây không phải button của bạn!', ephemeral: true });
+                        return;
+                    }
+
+                    const game = gameStateManager.getGame(gameId);
+                    if (!game) {
+                        await interaction.reply({ content: '❌ Game không tồn tại!', ephemeral: true });
+                        return;
+                    }
+
+                    const player = game.players.get(userId);
+                    if (!player || !player.isAlive) {
+                        await interaction.reply({ content: '❌ Bạn không thể hành động!', ephemeral: true });
+                        return;
+                    }
+
+                    // Build select menu using helper
+                    const { buildNightActionMenu } = await import('./games/werewolf/NightActionHelper');
+                    const alivePlayers = gameStateManager.getAlivePlayers(gameId);
+                    const selectMenu = buildNightActionMenu(gameId, player, alivePlayers);
+
+                    if (!selectMenu) {
+                        await interaction.reply({ content: '❌ Không có hành động khả dụng!', ephemeral: true });
+                        return;
+                    }
+
+                    const { ActionRowBuilder } = await import('discord.js');
+                    const row = new ActionRowBuilder<typeof selectMenu>().addComponents(selectMenu);
+
+                    const role = ROLES[player.role];
+                    await interaction.reply({
+                        content: `${role.emoji} **${role.nameVi}**\n${role.descriptionVi}`,
+                        components: [row],
+                        ephemeral: true
+                    });
+                }
+            }
+        }
+    } catch (error) {
+        console.error('[MA SÓI] Interaction error:', error);
+    }
+});
 
 client.login(DISCORD_TOKEN);
