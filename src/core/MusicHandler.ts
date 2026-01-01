@@ -290,6 +290,15 @@ export function leaveChannel(guildId: string): void {
     states.delete(guildId);
 }
 
+export function clearQueue(guildId: string): boolean {
+    const state = states.get(guildId);
+    if (state && state.queue.length > 0) {
+        state.queue = [];
+        return true;
+    }
+    return false;
+}
+
 export function getQueue(guildId: string) {
     const state = states.get(guildId);
     return { current: state?.current || null, queue: state?.queue || [] };

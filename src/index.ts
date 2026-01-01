@@ -4,7 +4,7 @@ import * as path from 'path';
 import { AntigravityClient } from './core/AntigravityClient';
 import { initDashboard, startDashboard } from './dashboard/server';
 import { joinChannel, leaveChannel, playMusic, stopMusic, skipTrack, getQueue, clearQueue } from './core/MusicHandler';
-import { parseMusicIntent } from './core/IntentParser';
+import { IntentParser } from './core/IntentParser';
 import { WerewolfGame } from './games/werewolf/WerewolfGame';
 import { gameStateManager } from './games/werewolf/GameState';
 import { Team, ROLES } from './games/werewolf/Roles';
@@ -18,6 +18,7 @@ const DASHBOARD_PORT = parseInt(process.env.DASHBOARD_PORT || '3000');
 
 // Initialize Core Systems
 const aiClient = new AntigravityClient(PROXY_URL);
+const intentParser = new IntentParser(aiClient);
 
 // Initialize Discord Client
 const client = new Client({
@@ -1065,7 +1066,7 @@ async function handleMentionText(message: Message) {
     // AI Intent Parser - try to understand unclear commands before falling back to general chat
     try {
         console.log('[IntentParser] Checking message for music intent:', userQuery);
-        const intent = await parseMusicIntent(userQuery);
+        const intent = await intentParser.parse(userQuery);
 
         if (intent.type !== 'none') {
             console.log('[IntentParser] Detected intent:', intent.type);
