@@ -1,9 +1,14 @@
 import { Client, GatewayIntentBits, Message } from 'discord.js';
 import * as dotenv from 'dotenv';
 import * as path from 'path';
+import * as fs from 'fs';
 import { AntigravityClient } from './core/AntigravityClient';
 import { initDashboard, startDashboard } from './dashboard/server';
-import { joinChannel, leaveChannel, playMusic, stopMusic, skipTrack, getQueue, clearQueue } from './core/MusicHandler';
+import {
+    playMusic, stopMusic, skipTrack, getQueue,
+    leaveChannel, joinChannel, clearQueue,
+    initMusicAI, toggleAutoplay  // Import new features
+} from './core/MusicHandler';
 import { IntentParser } from './core/IntentParser';
 import { WerewolfGame } from './games/werewolf/WerewolfGame';
 import { gameStateManager } from './games/werewolf/GameState';
@@ -32,18 +37,18 @@ const client = new Client({
 
 // Persona System Prompts (Updated to Vietnamese)
 const PERSONAS = {
-    senior: `Bạn là "Senior Lead" (Trưởng nhóm kỹ thuật) của server Discord này. Bạn là một kỹ sư phần mềm lão làng (15+ năm kinh nghiệm).
-Tone: Nghiêm túc, ngắn gọn, chuyên sâu, hơi khó tính nhưng tốt bụng. Không nói nhảm.
-Goal: Tìm lỗi logic, lỗi kiến trúc, và rủi ro bảo mật.
-Language: LUÔN TRẢ LỜI BẰNG TIẾNG VIỆT.
-Thinking: Luôn suy nghĩ kỹ trước khi trả lời (dùng thẻ <thinking>), nhưng chỉ đưa ra kết quả cuối cùng cho user.`,
+    senior: `Bạn là "Senior Lead"(Trưởng nhóm kỹ thuật) của server Discord này.Bạn là một kỹ sư phần mềm lão làng(15 + năm kinh nghiệm).
+    Tone: Nghiêm túc, ngắn gọn, chuyên sâu, hơi khó tính nhưng tốt bụng.Không nói nhảm.
+        Goal: Tìm lỗi logic, lỗi kiến trúc, và rủi ro bảo mật.
+            Language: LUÔN TRẢ LỜI BẰNG TIẾNG VIỆT.
+                Thinking: Luôn suy nghĩ kỹ trước khi trả lời(dùng thẻ<thinking>), nhưng chỉ đưa ra kết quả cuối cùng cho user.`,
 
     intern: `Bạn là "Thực tập sinh Gen Z".
-Tone: Nhiệt tình, dùng nhiều emoji 🚀, ngôn ngữ trẻ trung (gen Z), thân thiện.
-Goal: Giữ tương tác vui vẻ, chào mừng người mới. Không bao giờ tỏ ra xấu tính.
-Language: LUÔN TRẢ LỜI BẰNG TIẾNG VIỆT.`,
+    Tone: Nhiệt tình, dùng nhiều emoji 🚀, ngôn ngữ trẻ trung(gen Z), thân thiện.
+        Goal: Giữ tương tác vui vẻ, chào mừng người mới.Không bao giờ tỏ ra xấu tính.
+            Language: LUÔN TRẢ LỜI BẰNG TIẾNG VIỆT.`,
 
-    default: `Bạn là trợ lý AI hữu ích. Hãy trả lời bằng Tiếng Việt.`
+    default: `Bạn là trợ lý AI hữu ích.Hãy trả lời bằng Tiếng Việt.`
 };
 
 // ==================== MEMORY SYSTEM ====================
@@ -122,9 +127,9 @@ function parseAspectRatio(prompt: string): { ratio: string; cleanPrompt: string 
 function getContextId(message: Message): string {
     // If message is in a thread, use thread ID for separate memory
     if (message.channel.isThread()) {
-        return `thread-${message.channel.id}`;
+        return `thread - ${message.channel.id} `;
     }
-    return `channel-${message.channel.id}`;
+    return `channel - ${message.channel.id} `;
 }
 
 function getConversationHistory(contextId: string): ConversationMessage[] {
@@ -165,7 +170,7 @@ function buildMessagesWithHistory(contextId: string, systemPrompt: string, userM
 }
 
 client.once('ready', () => {
-    console.log(`[Bot] Logged in as ${client.user?.tag}`);
+    console.log(`[Bot] Logged in as ${client.user?.tag} `);
 });
 
 client.on('messageCreate', async (message: Message) => {
@@ -271,8 +276,8 @@ client.on('interactionCreate', async interaction => {
 
 async function handleClearMemory(interaction: any) {
     const contextId = interaction.channel?.isThread()
-        ? `thread-${interaction.channel.id}`
-        : `channel-${interaction.channelId}`;
+        ? `thread - ${interaction.channel.id} `
+        : `channel - ${interaction.channelId} `;
 
     clearMemory(contextId);
     await interaction.reply({
@@ -292,12 +297,12 @@ async function handleStatus(interaction: any) {
 
     const autoReplyCount = autoReplyChannels.size;
 
-    const statusMsg = `📊 **Trạng thái Bot:**
-• **Uptime:** ${uptimeHour}h ${uptimeMin % 60}m
-• **Memory:** ${memoryCount} kênh/thread đang được theo dõi
-• **Tổng tin nhắn trong bộ nhớ:** ${totalMessages}
-• **Auto-reply channels:** ${autoReplyCount}
-• **Rate limit:** ${RATE_LIMIT_REQUESTS} req/${RATE_LIMIT_WINDOW_MS / 1000}s per user`;
+    const statusMsg = `📊 ** Trạng thái Bot:**
+• ** Uptime:** ${uptimeHour}h ${uptimeMin % 60} m
+• ** Memory:** ${memoryCount} kênh / thread đang được theo dõi
+• ** Tổng tin nhắn trong bộ nhớ:** ${totalMessages}
+• ** Auto - reply channels:** ${autoReplyCount}
+• ** Rate limit:** ${RATE_LIMIT_REQUESTS} req / ${RATE_LIMIT_WINDOW_MS / 1000}s per user`;
 
     await interaction.reply({ content: statusMsg, ephemeral: true });
 }
@@ -365,7 +370,7 @@ async function handleAnalyzeFile(interaction: any) {
                 {
                     role: 'user',
                     content: [
-                        { type: 'image_url', image_url: { url: `data:application/pdf;base64,${base64}` } },
+                        { type: 'image_url', image_url: { url: `data: application / pdf; base64, ${base64} ` } },
                         { type: 'text', text: question }
                     ]
                 }
@@ -384,7 +389,7 @@ async function handleAnalyzeFile(interaction: any) {
                 fileContent = fileContent.substring(0, 50000) + '\n\n... (truncated)';
             }
 
-            const prompt = `File: ${attachment.name}\n\nNội dung:\n\`\`\`\n${fileContent}\n\`\`\`\n\n${question}`;
+            const prompt = `File: ${attachment.name} \n\nNội dung: \n\`\`\`\n${fileContent}\n\`\`\`\n\n${question}`;
 
             const aiResponse = await aiClient.chatCompletion([
                 { role: 'system', content: 'Bạn là trợ lý AI phân tích code và file. Trả lời bằng tiếng Việt.' },
@@ -455,7 +460,7 @@ async function handleRunCode(interaction: any) {
             output += `=> ${JSON.stringify(result)}`;
         }
 
-        const response = `▶️ **Code Execution Result:**\n\`\`\`js\n${code}\n\`\`\`\n\n**Output:**\n\`\`\`\n${output || '(no output)'}\n\`\`\``;
+        const response = `▶️ **Code Execution Result:**\n\`\`\`js\n${code}\n\`\`\`\n\n**Output:**\n\`\`\`\n${output || '(no output)'}\`\`\``;
 
         if (response.length > 2000) {
             await interaction.editReply(response.substring(0, 2000));
@@ -1066,32 +1071,74 @@ async function handleMentionText(message: Message) {
     // AI Intent Parser - try to understand unclear commands before falling back to general chat
     try {
         console.log('[IntentParser] Checking message for music intent:', userQuery);
-        const intent = await intentParser.parse(userQuery);
+        const intents = await intentParser.parse(userQuery);
 
-        if (intent.type !== 'none') {
-            console.log('[IntentParser] Detected intent:', intent.type);
+        for (const intent of intents) {
+            if (intent.type !== 'none') {
+                console.log('[IntentParser] Detected intent:', intent.type);
 
-            switch (intent.type) {
-                case 'play':
-                    await handleMusicCommand(message, intent.query || 'lofi hip hop');
-                    return;
-                case 'stop':
-                    await handleMusicStop(message);
-                    return;
-                case 'skip':
-                    await handleMusicSkip(message);
-                    return;
-                case 'queue':
-                    await handleMusicQueue(message);
-                    return;
-                case 'clear':
-                    await handleMusicClear(message);
-                    return;
-                case 'leave':
-                    await handleMusicLeave(message);
-                    return;
+                switch (intent.type) {
+                    case 'play':
+                        await handleMusicCommand(message, intent.query || 'lofi hip hop');
+                        break;
+                    case 'stop':
+                        await handleMusicStop(message);
+                        break;
+                    case 'skip':
+                        await handleMusicSkip(message);
+                        break;
+                    case 'queue':
+                        await handleMusicQueue(message);
+                        break;
+                    case 'clear':
+                        await handleMusicClear(message);
+                        break;
+                    case 'leave':
+                        await handleMusicLeave(message);
+                        break;
+                    case 'autoplay':
+                        const result = toggleAutoplay(message.guild!.id);
+                        if (result.success) {
+                            await message.reply(result.enabled
+                                ? "♾️ Đã BẬT chế độ 'Smart Auto-Play'! Hết nhạc bot sẽ tự tìm bài hát cùng vibe để quẩy tiếp! 🔥"
+                                : "🛑 Đã TẮT chế độ 'Smart Auto-Play'.");
+                        } else {
+                            await message.reply("❌ Bạn phải phát nhạc trước mới bật chế độ này được nha!");
+                        }
+                        break;
+                    case 'cleanup':
+                        // Check if channel supports bulkDelete (GuildText, Thread, etc.)
+                        if ('bulkDelete' in message.channel) {
+                            try {
+                                const fetched = await message.channel.messages.fetch({ limit: 100 });
+                                const botMessages = fetched.filter(m => m.author.id === client.user?.id);
+
+                                if (botMessages.size > 0) {
+                                    // Cast to any to bypass TS strict check or use specific type assertion if needed
+                                    await (message.channel as any).bulkDelete(botMessages, true);
+                                    const confirmMsg = await message.reply(`🧹 Đã dọn dẹp **${botMessages.size}** tin nhắn của bot!`);
+                                    setTimeout(() => confirmMsg.delete().catch(() => { }), 3000);
+                                } else {
+                                    await message.reply("🧹 Kênh sạch bong, không có gì để xóa!");
+                                }
+                            } catch (err) {
+                                console.error('[Cleanup] Error:', err);
+                                await message.reply("⚠️ Lỗi khi xóa tin nhắn (Tin nhắn quá cũ hoặc lỗi quyền).");
+                            }
+                        } else {
+                            await message.reply("⚠️ Kênh này không hỗ trợ lệnh dọn dẹp.");
+                        }
+                        break;
+                }
+
+                // Small delay between actions to prevent race conditions or rate limits
+                if (intents.length > 1) await new Promise(resolve => setTimeout(resolve, 1000));
             }
         }
+
+        // If we processed valid intents, stop here (don't chat)
+        if (intents.some(i => i.type !== 'none')) return;
+
     } catch (error) {
         console.error('[IntentParser] Error parsing intent:', error);
     }
@@ -1147,7 +1194,7 @@ async function handleMentionText(message: Message) {
         }
     } catch (error: any) {
         console.error("Mention Text Error:", error);
-        await loadingMsg.edit(`Lỗi: ${error.message}`);
+        await loadingMsg.edit(`⚠️ Có lỗi khi kết nối với não bộ (AI): **${error.message || 'Unknown Error'}**\n*(Hãy thử lại hoặc kiểm tra proxy)*`);
     }
 }
 
@@ -1900,4 +1947,50 @@ client.on('interactionCreate', async (interaction) => {
     }
 });
 
-client.login(DISCORD_TOKEN);
+// Initialize Music AI
+initMusicAI(aiClient);
+
+// Button Interaction Handler
+client.on('interactionCreate', async (interaction) => {
+    if (!interaction.isButton()) return;
+
+    const { customId } = interaction;
+    if (!customId.startsWith('music_')) return;
+
+    const guildId = interaction.guildId;
+    if (!guildId) return;
+
+    await interaction.deferUpdate(); // Acknowledge click immediately
+
+    // Route Actions
+    const MusicHandler = require('./core/MusicHandler'); // Lazy load to avoid circular dep issues during init
+    switch (customId) {
+        case 'music_pause_resume':
+            MusicHandler.togglePause(guildId);
+            break;
+        case 'music_skip':
+            MusicHandler.skipTrack(guildId);
+            break;
+        case 'music_stop':
+            MusicHandler.stopMusic(guildId);
+            break;
+        case 'music_loop':
+            MusicHandler.toggleLoop(guildId);
+            break;
+        case 'music_save':
+            const state = MusicHandler.getMusicState(guildId);
+            if (state && state.current) {
+                try {
+                    await interaction.user.send({
+                        content: `💾 **Track Saved:**\n🎵 **${state.current.title}**\n🔗 ${state.current.url || state.current.query}`
+                    });
+                } catch {
+                    // DM Failed
+                }
+            }
+            break;
+    }
+});
+
+// Login to Discord
+client.login(process.env.DISCORD_TOKEN);

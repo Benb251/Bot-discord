@@ -10,32 +10,34 @@ import {
     StreamType
 } from '@discordjs/voice';
 import play from 'play-dl';
-import ytdl from '@distube/ytdl-core';
 import type { VoiceBasedChannel, TextChannel } from 'discord.js';
 import { fetch } from 'undici';
 const spotifyInfo = require('spotify-url-info')(fetch);
 import { execSync, spawn } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
+import { AntigravityClient } from './AntigravityClient';
+import { MusicDashboard } from './MusicDashboard';
 
+let aiClient: AntigravityClient | null = null;
 const COOKIES_PATH = path.join(process.cwd(), 'www.youtube.com_cookies.txt');
 const YTDLP_PATH = path.join(process.cwd(), 'yt-dlp.exe');
+
+export function initMusicAI(client: AntigravityClient) {
+    aiClient = client;
+}
 
 // Optimized play-dl for searching ONLY (using cleaned cookies)
 async function initPlayDl() {
     try {
         if (fs.existsSync(COOKIES_PATH)) {
             console.log('[Music] Testing cookies for search...');
-            // We don't setToken here as it caused header errors, 
-            // yt-dlp handles the file directly.
         }
     } catch (err) {
         console.error('[Music] Failed to init play-dl:', err);
     }
 }
 initPlayDl();
-
-
 
 
 // Simplified Track Interface
@@ -47,36 +49,58 @@ interface Track {
 }
 
 // Guild Music State
-interface MusicState {
+export interface MusicState {
     player: AudioPlayer;
     queue: Track[];
     current: Track | null;
     channel: TextChannel | null;
-    lastErrorTime: number; // To prevent spam
+    lastErrorTime: number;
+    autoplay: boolean;
+    loop: boolean;
+    dashboardId?: string;
+    startTime?: number; // Track when song started
 }
 
-
 const states = new Map<string, MusicState>();
+
+/**
+ * Send a temporary message that deletes itself after 30s
+ */
+async function sendTemp(channel: TextChannel | null, content: string) {
+    if (!channel) return;
+    try {
+        const msg = await channel.send(content);
+        setTimeout(() => msg.delete().catch(() => { }), 30_000);
+    } catch (e) { /* Ignore */ }
+}
 
 /**
  * Robust YouTube search (play-dl with yt-dlp fallback)
  */
 async function searchYouTube(query: string): Promise<string | null> {
+    // Clean query (remove words like 'của', 'bài', 'phát', 'hãy') to help search
+    const cleanQuery = query
+        .replace(/\b(của|bài|phát|mở|nghe|hãy|bật|tại)\b/gi, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+    console.log(`[Music] Searching: "${cleanQuery}" (Raw: "${query}")`);
+
     // Try play-dl first (fast)
     try {
-        const search = await play.search(query, { limit: 1 });
+        const search = await play.search(cleanQuery, { limit: 1 });
         if (search.length > 0 && search[0].url) return search[0].url;
     } catch (err) {
-        console.warn(`[Music] play-dl search failed for "${query}", trying yt-dlp...`);
+        console.warn(`[Music] play-dl search failed for "${cleanQuery}", trying yt-dlp...`);
     }
 
     // Fallback to yt-dlp (reliable)
     try {
-        const result = execSync(`"${YTDLP_PATH}" "ytsearch1:${query}" --get-id`, { encoding: 'utf-8', timeout: 10000 });
+        const result = execSync(`"${YTDLP_PATH}" "ytsearch1:${cleanQuery}" --get-id`, { encoding: 'utf-8', timeout: 10000 });
         const videoId = result.trim();
         if (videoId) return `https://www.youtube.com/watch?v=${videoId}`;
     } catch (err) {
-        console.error(`[Music] yt-dlp search failed for "${query}"`, err);
+        console.error(`[Music] yt-dlp search failed for "${cleanQuery}"`, err);
     }
 
     return null;
@@ -109,25 +133,84 @@ async function processQueue(guildId: string): Promise<void> {
     if (!state) return;
 
     if (state.queue.length === 0) {
+        // Smart Auto-Play Logic
+        if (state.autoplay && state.current && aiClient) {
+            const lastTrackTitle = state.current.title;
+            // Temp Message
+            sendTemp(state.channel, `♾️ Hết nhạc rồi... Đang nhờ AI tìm bài có vibe giống **"${lastTrackTitle}"**...`);
+
+            try {
+                const messages = [
+                    { role: 'system', content: 'You are a music DJ. User gives a song name. You reply with ONLY ONE song name that has a similar style/vibe. Do not add quotes or explanation.' },
+                    { role: 'user', content: lastTrackTitle }
+                ];
+
+                let response;
+                try {
+                    response = await aiClient.chatCompletion(messages, 'gemini-3-flash-preview');
+                } catch (err) {
+                    console.warn('[Music] Auto-Play: 3.0 Flash failed, trying 2.5 Flash...');
+                    response = await aiClient.chatCompletion(messages, 'gemini-2.5-flash');
+                }
+
+                const suggestion = response.choices?.[0]?.message?.content?.trim() || '';
+
+                if (suggestion && suggestion.length > 2) {
+                    console.log(`[Music] Auto-Play Suggestion: ${suggestion}`);
+                    // Temp Message
+                    sendTemp(state.channel, `✨ AI Suggest: **${suggestion}**`);
+
+                    const ytUrl = await searchYouTube(suggestion);
+                    if (ytUrl) {
+                        try {
+                            const info = await play.video_info(ytUrl);
+                            state.queue.push({
+                                url: ytUrl,
+                                title: info.video_details.title || suggestion,
+                                duration: info.video_details.durationRaw
+                            });
+                            processQueue(guildId);
+                            return;
+                        } catch (e) {
+                            state.queue.push({ url: ytUrl, title: suggestion, duration: '?:??' });
+                            processQueue(guildId);
+                            return;
+                        }
+                    } else {
+                        // Temp Message
+                        sendTemp(state.channel, `❌ AI tìm ra bài "${suggestion}" mà không thấy link YouTube...`);
+                    }
+                } else {
+                    // Temp Message
+                    sendTemp(state.channel, '🤖 AI không nghĩ ra bài gì cả... (Trống rỗng)');
+                }
+            } catch (aiErr: any) {
+                console.error('[Music] Auto-Play AI Error:', aiErr);
+                // Temp Message
+                sendTemp(state.channel, `⚠️ Lỗi AI DJ: ${aiErr.message || 'Kết nối kém'}`);
+            }
+        }
+
         state.current = null;
-        state.channel?.send('📭 Hết nhạc rồi! Thêm bài mới đi bạn ơi.');
+        MusicDashboard.destroy(state); // Clean up dashboard
+        // Temp Message
+        sendTemp(state.channel, '📭 Hết nhạc rồi! Thêm bài mới đi bạn ơi.');
         return;
     }
 
     const nextTrack = state.queue.shift()!;
     state.current = nextTrack;
+    state.startTime = Date.now(); // Set start time
 
     try {
         let streamUrl = nextTrack.url;
-
-        // If it's a Spotify track with only a query, search YouTube now
         if (!streamUrl && nextTrack.query) {
             console.log(`[Music] Searching YouTube for: ${nextTrack.query}`);
             streamUrl = await searchYouTube(nextTrack.query) || undefined;
         }
 
         if (!streamUrl) {
-            state.channel?.send(`❌ Không tìm thấy nhạc cho bài: ${nextTrack.title}`);
+            sendTemp(state.channel, `❌ Không tìm thấy nhạc cho bài: ${nextTrack.title}`);
             return processQueue(guildId);
         }
 
@@ -135,10 +218,10 @@ async function processQueue(guildId: string): Promise<void> {
 
         const ytArgs = [
             streamUrl,
-            '-f', 'bestaudio[ext=webm]/bestaudio/best', // Tối ưu cho streaming
+            '-f', 'bestaudio[ext=webm]/bestaudio/best',
             '-o', '-',
             '--no-playlist',
-            '--buffer-size', '512K', // Buffer lớn để mượt hơn
+            '--buffer-size', '512K',
             '--extractor-retries', '5',
             '--fragment-retries', '5',
             '--no-part',
@@ -146,7 +229,6 @@ async function processQueue(guildId: string): Promise<void> {
             '--no-warnings'
         ];
 
-        // Add cookies if available
         if (fs.existsSync(COOKIES_PATH)) {
             ytArgs.push('--cookies', COOKIES_PATH);
         }
@@ -159,23 +241,27 @@ async function processQueue(guildId: string): Promise<void> {
         });
 
         state.player.play(resource);
-        state.channel?.send(`🎵 Đang phát: **${nextTrack.title}**`);
+
+        // Use Dashboard instead of text
+        MusicDashboard.sendNowPlaying(state).catch(err => {
+            console.error('[Music] Dashboard Error:', err);
+            sendTemp(state.channel, `🎵 Đang phát: **${nextTrack.title}**`);
+        });
 
     } catch (error) {
         console.error('[Music] Stream Error:', error);
 
-        // Prevent infinite fast loop (spam)
         const now = Date.now();
         if (now - state.lastErrorTime < 2000) {
             console.warn('[Music] Errors happening too fast, stopping auto-skip briefly.');
-            state.channel?.send('⚠️ Gặp lỗi liên tục khi kết nối YouTube, vui lòng thử lại sau giây lát.');
+            sendTemp(state.channel, '⚠️ Gặp lỗi liên tục khi kết nối YouTube, vui lòng thử lại sau giây lát.');
             state.lastErrorTime = now;
             return;
         }
         state.lastErrorTime = now;
 
-        state.channel?.send(`❌ Lỗi khi phát bài: ${nextTrack.title}`);
-        setTimeout(() => processQueue(guildId), 1000); // Wait 1s before next one
+        sendTemp(state.channel, `❌ Lỗi khi phát bài: ${nextTrack.title}`);
+        setTimeout(() => processQueue(guildId), 1000);
     }
 }
 
@@ -190,12 +276,25 @@ export async function playMusic(guildId: string, query: string, channel?: TextCh
         let state = states.get(guildId);
         if (!state) {
             const player = createAudioPlayer();
-            state = { player, queue: [], current: null, channel: channel || null, lastErrorTime: 0 };
+            state = {
+                player,
+                queue: [],
+                current: null,
+                channel: channel || null,
+                lastErrorTime: 0,
+                autoplay: true,
+                loop: false,
+                startTime: 0
+            };
             states.set(guildId, state);
             connection.subscribe(player);
 
             player.on(AudioPlayerStatus.Idle, () => {
-                // Only trigger if we actually played something (not just crashed instantly)
+                const s = states.get(guildId);
+                // Loop Logic
+                if (s && s.loop && s.current) {
+                    s.queue.unshift(s.current);
+                }
                 processQueue(guildId);
             });
             player.on('error', (err) => {
@@ -210,7 +309,6 @@ export async function playMusic(guildId: string, query: string, channel?: TextCh
 
         if (channel) state.channel = channel;
 
-        // Simple Search/Parse
         let tracks: Track[] = [];
 
         // 1. Spotify
@@ -236,7 +334,6 @@ export async function playMusic(guildId: string, query: string, channel?: TextCh
         else {
             const ytUrl = await searchYouTube(query);
             if (ytUrl) {
-                // Get basic info to show title (still use play-dl for info as it's less likely to fail than search)
                 try {
                     const info = await play.video_info(ytUrl);
                     tracks.push({
@@ -253,10 +350,11 @@ export async function playMusic(guildId: string, query: string, channel?: TextCh
         if (tracks.length === 0) return { success: false, message: 'Không tìm thấy kết quả!' };
 
         state.queue.push(...tracks);
+        MusicDashboard.sendNowPlaying(state); // Update dashboard
 
         if (!state.current || state.player.state.status === AudioPlayerStatus.Idle) {
             processQueue(guildId);
-            return { success: true, message: `🎵 Bắt đầu phát: **${tracks[0].title}**` };
+            return { success: true, message: `⏳ Đang tải bài: **${tracks[0].title}**...` };
         }
 
         return { success: true, message: `📋 Đã thêm vào hàng chờ: **${tracks[0].title}**` };
@@ -279,6 +377,7 @@ export function stopMusic(guildId: string): boolean {
     if (state) {
         state.queue = [];
         state.player.stop();
+        MusicDashboard.destroy(state);
         return true;
     }
     return false;
@@ -287,6 +386,9 @@ export function stopMusic(guildId: string): boolean {
 export function leaveChannel(guildId: string): void {
     const connection = getVoiceConnection(guildId);
     if (connection) connection.destroy();
+
+    const state = states.get(guildId);
+    if (state) MusicDashboard.destroy(state);
     states.delete(guildId);
 }
 
@@ -302,4 +404,42 @@ export function clearQueue(guildId: string): boolean {
 export function getQueue(guildId: string) {
     const state = states.get(guildId);
     return { current: state?.current || null, queue: state?.queue || [] };
+}
+
+export function toggleAutoplay(guildId: string): { success: boolean, enabled: boolean } {
+    const state = states.get(guildId);
+    if (state) {
+        state.autoplay = !state.autoplay;
+        return { success: true, enabled: state.autoplay };
+    }
+    return { success: false, enabled: false };
+}
+
+// Interaction Handlers
+export function togglePause(guildId: string): { success: boolean, isPaused: boolean } {
+    const state = states.get(guildId);
+    if (!state) return { success: false, isPaused: false };
+
+    if (state.player.state.status === AudioPlayerStatus.Playing) {
+        state.player.pause();
+        MusicDashboard.sendNowPlaying(state);
+        return { success: true, isPaused: true };
+    } else {
+        state.player.unpause();
+        MusicDashboard.sendNowPlaying(state);
+        return { success: true, isPaused: false };
+    }
+}
+
+export function toggleLoop(guildId: string): { success: boolean, enabled: boolean } {
+    const state = states.get(guildId);
+    if (!state) return { success: false, enabled: false };
+
+    state.loop = !state.loop;
+    MusicDashboard.sendNowPlaying(state);
+    return { success: true, enabled: state.loop };
+}
+
+export function getMusicState(guildId: string): MusicState | undefined {
+    return states.get(guildId);
 }

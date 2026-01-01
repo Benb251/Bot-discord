@@ -8,27 +8,36 @@ export type MusicIntent =
     | { type: 'queue' }
     | { type: 'clear' }
     | { type: 'leave' }
+    | { type: 'autoplay' }
+    | { type: 'cleanup' }
     | { type: 'none' }; // Not a music command
 
 // System prompt for intent parsing
 const INTENT_SYSTEM_PROMPT = `Bạn là một AI phân tích ý định người dùng cho bot Discord phát nhạc.
 
-Phân tích tin nhắn và trả về JSON với format:
-{"type": "play|stop|skip|queue|clear|leave|none", "query": "tên bài hát nếu có", "url": "URL nếu có"}
+Phân tích tin nhắn và trả về JSON ARRAY (Danh sách) các ý định:
+[{"type": "play|stop|skip|queue|clear|leave|autoplay|cleanup|none", "query": "...", "url": "..."}]
+
+Nếu người dùng yêu cầu NHIỀU hành động (ví dụ: "skip bài này và mở bài ABC"), hãy trả về NHIỀU object trong mảng theo thứ tự.
 
 Các ý định:
-- "play": Người dùng muốn phát nhạc, **kể cả khi yêu cầu chung chung** (ví dụ: "bật nhạc chill", "mở bài gì buồn buồn", "nhạc lofi đi").
+- "play": Người dùng muốn phát nhạc, **kể cả khi yêu cầu chung chung**.
 - "stop": Dừng/tắt nhạc.
 - "skip": Bỏ qua bài.
 - "queue": Xem danh sách.
 - "clear": Xóa queue.
 - "leave": Rời kênh.
-- "none": Chỉ là chat, hỏi đáp, không liên quan đến việc mở nhạc ngay lập tức.
+- "autoplay": Bật/tắt chế độ tự động.
+- "cleanup": Xóa tin nhắn bot (khi có từ khóa "xóa", "dọn", "spam").
+- "none": Không liên quan.
 
-Lưu ý:
-- "mở bài gì chill chill đi" -> {"type":"play", "query":"nhạc chill"}
-- "bật nhạc học bài" -> {"type":"play", "query":"lofi study"}
-- CHỈ trả về JSON.`;
+Ví dụ:
+- "mở bài gì chill chill đi" -> [{"type":"play", "query":"nhạc chill"}]
+- "skip bài này rồi mở nhạc sếp tùng" -> [{"type":"skip"}, {"type":"play", "query":"nhạc sơn tùng mtp"}]
+- "dừng lại và xóa queue" -> [{"type":"stop"}, {"type":"clear"}]
+- "spam quá xóa đi" -> [{"type":"cleanup"}]
+
+CHỈ trả về JSON.`;
 
 export class IntentParser {
     private client: AntigravityClient;
@@ -40,11 +49,11 @@ export class IntentParser {
     /**
      * Parse user message to determine music intent using AI
      */
-    async parse(message: string): Promise<MusicIntent> {
+    async parse(message: string): Promise<MusicIntent[]> {
         try {
             // Quick check - if message is too short or generic
             if (message.length < 2) {
-                return { type: 'none' };
+                return [{ type: 'none' }];
             }
 
             const messages = [
@@ -64,37 +73,42 @@ export class IntentParser {
             const content = response.choices?.[0]?.message?.content?.trim() || '';
             console.log('[IntentParser] AI response:', content);
 
-            // Parse JSON response key-by-key to be safe
-            const jsonMatch = content.match(/\{[\s\S]*\}/);
+            // Parse JSON response which might be an object OR an array
+            const jsonMatch = content.match(/\[[\s\S]*\]/) || content.match(/\{[\s\S]*\}/);
+
             if (!jsonMatch) {
                 console.log('[IntentParser] No JSON found in response');
-                return { type: 'none' };
+                return [{ type: 'none' }];
             }
 
-            const parsed = JSON.parse(jsonMatch[0]);
+            let parsed = JSON.parse(jsonMatch[0]);
 
-            switch (parsed.type) {
-                case 'play':
-                    // Prioritize AI-extracted URL over full query
-                    const finalQuery = parsed.url || parsed.query || '';
-                    console.log('[IntentParser] Final query:', finalQuery, '(URL extracted:', !!parsed.url, ')');
-                    return { type: 'play', query: finalQuery, url: parsed.url };
-                case 'stop':
-                    return { type: 'stop' };
-                case 'skip':
-                    return { type: 'skip' };
-                case 'queue':
-                    return { type: 'queue' };
-                case 'clear':
-                    return { type: 'clear' };
-                case 'leave':
-                    return { type: 'leave' };
-                default:
-                    return { type: 'none' };
+            // Ensure it's an array
+            if (!Array.isArray(parsed)) {
+                parsed = [parsed];
             }
+
+            // Map to strict types
+            return parsed.map((item: any) => {
+                switch (item.type) {
+                    case 'play':
+                        const finalQuery = item.url || item.query || '';
+                        return { type: 'play', query: finalQuery, url: item.url };
+                    case 'stop': return { type: 'stop' };
+                    case 'skip': return { type: 'skip' };
+                    case 'queue': return { type: 'queue' };
+                    case 'clear': return { type: 'clear' };
+                    case 'leave': return { type: 'leave' };
+                    case 'autoplay': return { type: 'autoplay' };
+                    case 'cleanup': return { type: 'cleanup' };
+                    default: return { type: 'none' };
+                }
+            });
+
         } catch (error) {
             console.error('[IntentParser] Error:', error);
-            return { type: 'none' };
+            return [{ type: 'none' }];
         }
     }
 }
+
